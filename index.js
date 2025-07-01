@@ -186,7 +186,14 @@ app.get('/allproducts', async (req, res) => {
 
 app.get('/product/:id', async (req, res) => {
   try {
-    const product = await Product.findById(req.params.id).lean();
+    const { id } = req.params;
+
+    const query = mongoose.Types.ObjectId.isValid(id)
+      ? { $or: [{ _id: id }, { id: isNaN(Number(id)) ? id : Number(id) }] }
+      : { id: isNaN(Number(id)) ? id : Number(id) };
+
+    const product = await Product.findOne(query).lean();
+
     if (!product) {
       return res.status(404).json({
         success: false,
@@ -195,7 +202,7 @@ app.get('/product/:id', async (req, res) => {
     }
 
     const completeProduct = {
-      id: product._id, // or a separate product.id if exists
+      id: product.id || product._id,
       name: product.name,
       gender: product.gender,
       category: product.category,
@@ -212,12 +219,9 @@ app.get('/product/:id', async (req, res) => {
       __v: product.__v
     };
 
-    res.json({
-      success: true,
-      product: completeProduct
-    });
+    res.json({ success: true, product: completeProduct });
   } catch (err) {
-    console.error('Get product error:', err);
+    console.error('Get product error:', err.message);
     res.status(500).json({
       success: false,
       message: 'Failed to fetch product',
@@ -237,28 +241,28 @@ app.post('/removeproduct', async (req, res) => {
   }
 });
 
-// === USER MODEL ===
+// 1. Update User Model to include roles
 const userSchema = new mongoose.Schema({
   name: String,
   email: { type: String, unique: true },
   password: String,
-  cartData: Object,
+  cartData: { type: Map, of: Number, default: {} },
   discount: { type: Number, default: 0 },
   date: { type: Date, default: Date.now },
+  roles: { type: [String], default: ['user'], enum: ['user', 'admin'] }
 });
 
 const User = mongoose.model('User', userSchema);
-
-// === SIGNUP ===
+// === USER ROUTES ===
 app.post('/signup', async (req, res) => {
   try {
     const existing = await User.findOne({ email: req.body.email });
     if (existing) return res.status(400).json({ success: false, message: 'User already exists' });
 
+    const hashedPassword = await bcrypt.hash(req.body.password, 10);
     const cart = {};
     for (let i = 0; i < 300; i++) cart[i] = 0;
 
-    const hashedPassword = await bcrypt.hash(req.body.password, 10);
     const user = new User({ ...req.body, password: hashedPassword, cartData: cart });
     await user.save();
 
@@ -270,7 +274,6 @@ app.post('/signup', async (req, res) => {
   }
 });
 
-// === LOGIN ===
 app.post('/login', async (req, res) => {
   try {
     const user = await User.findOne({ email: req.body.email });
@@ -282,23 +285,264 @@ app.post('/login', async (req, res) => {
     const token = jwt.sign({ user: { id: user._id } }, 'secret_dressmart');
     res.json({ success: true, token });
   } catch (err) {
-    console.error('Login error:', err);
-    res.status(500).json({ success: false, message: 'Failed to login' });
+    res.status(500).json({ success: false, message: 'Login failed' });
   }
 });
+
+
+app.post('/register-admin', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    
+    // Check if admin already exists
+    const existingAdmin = await User.findOne({ email, roles: 'admin' });
+    if (existingAdmin) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Admin already exists' 
+      });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const admin = new User({ 
+      email, 
+      password: hashedPassword,
+      roles: ['admin']
+    });
+
+    await admin.save();
+
+    res.json({ 
+      success: true,
+      message: 'Admin registered successfully'
+    });
+  } catch (err) {
+    console.error('Admin registration error:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to register admin',
+      error: err.message 
+    });
+  }
+});
+
+// 3. Improved Admin Login
+app.post('/admin/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Email and password are required' 
+      });
+    }
+
+    // Find user with admin role
+    const admin = await User.findOne({ 
+      email,
+      roles: { $in: ['admin'] } 
+    });
+
+    if (!admin) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Admin account not found' 
+      });
+    }
+
+    const validPass = await bcrypt.compare(password, admin.password);
+    if (!validPass) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Invalid credentials' 
+      });
+    }
+
+    const token = jwt.sign(
+      { 
+        user: { 
+          id: admin._id,
+          roles: admin.roles,
+          isAdmin: true 
+        } 
+      }, 
+      'secret_dressmart',
+      { expiresIn: '8h' }
+    );
+
+    res.json({ 
+      success: true, 
+      token,
+      user: {
+        id: admin._id,
+        email: admin.email,
+        roles: admin.roles
+      }
+    });
+  } catch (err) {
+    console.error('Admin login error:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Login failed',
+      error: err.message 
+    });
+  }
+});
+
+
 
 // === AUTH MIDDLEWARE ===
 const fetchUser = (req, res, next) => {
   const token = req.header('auth-token');
-  if (!token) return res.status(401).json({ error: 'No token, authorization denied' });
+  if (!token) return res.status(401).json({ error: 'Access denied. No token.' });
   try {
     const data = jwt.verify(token, 'secret_dressmart');
     req.user = data.user;
     next();
   } catch {
-    res.status(401).json({ error: 'Invalid token' });
+    return res.status(401).json({ error: 'Invalid token' });
   }
 };
+
+app.post('/register-admin', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    
+    // Check if admin already exists
+    const existingAdmin = await User.findOne({ email, roles: 'admin' });
+    if (existingAdmin) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Admin already exists' 
+      });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const admin = new User({ 
+      email, 
+      password: hashedPassword,
+      roles: ['admin']
+    });
+
+    await admin.save();
+
+    res.json({ 
+      success: true,
+      message: 'Admin registered successfully'
+    });
+  } catch (err) {
+    console.error('Admin registration error:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to register admin',
+      error: err.message 
+    });
+  }
+});
+
+// 3. Improved Admin Login
+app.post('/admin/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Email and password are required' 
+      });
+    }
+
+    // Find user with admin role
+    const admin = await User.findOne({ 
+      email,
+      roles: { $in: ['admin'] } 
+    });
+
+    if (!admin) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Admin account not found' 
+      });
+    }
+
+    const validPass = await bcrypt.compare(password, admin.password);
+    if (!validPass) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Invalid credentials' 
+      });
+    }
+
+    const token = jwt.sign(
+      { 
+        user: { 
+          id: admin._id,
+          roles: admin.roles,
+          isAdmin: true 
+        } 
+      }, 
+      'secret_dressmart',
+      { expiresIn: '8h' }
+    );
+
+    res.json({ 
+      success: true, 
+      token,
+      user: {
+        id: admin._id,
+        email: admin.email,
+        roles: admin.roles
+      }
+    });
+  } catch (err) {
+    console.error('Admin login error:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Login failed',
+      error: err.message 
+    });
+  }
+});
+
+// 5. Admin-specific Middleware
+const requireAdmin = (req, res, next) => {
+  if (!req.user.roles.includes('admin')) {
+    return res.status(403).json({ 
+      success: false, 
+      message: 'Admin access required' 
+    });
+  }
+  next();
+};
+
+// === AUTH MIDDLEWARE ===
+const authenticateAdmin = async (req, res, next) => {
+  const token = req.header('Authorization')?.replace('Bearer ', '');
+
+  if (!token) {
+    return res.status(401).json({ success: false, message: 'No token provided' });
+  }
+
+  try {
+    const decoded = jwt.verify(token, 'secret_dressmart');
+
+    const user = await User.findById(decoded.user.id);
+    if (!user) {
+      return res.status(401).json({ success: false, message: 'User not found' });
+    }
+
+    if (!user.roles.includes('admin')) {
+      return res.status(403).json({ success: false, message: 'Access denied: Not an admin' });
+    }
+
+    req.user = user; // Attach user to request
+    next();
+  } catch (err) {
+    return res.status(401).json({ success: false, message: 'Invalid token' });
+  }
+};
+
 
 // === CART ROUTES ===
 app.post('/addtocart', fetchUser, async (req, res) => {
@@ -395,88 +639,393 @@ app.get('/getcartsummary', fetchUser, async (req, res) => {
   }
 });
 
-// === ADMIN MODEL ===
-const adminSchema = new mongoose.Schema({
-  email: { type: String, unique: true },
-  password: String,
-});
 
-const Admin = mongoose.model('Admin', adminSchema);
 
-// === ADMIN REGISTRATION ===
-app.post('/register-admin', async (req, res) => {
+// === ADMIN USERS ENDPOINT ===
+app.get('/admin/users', authenticateAdmin, async (req, res) => {
   try {
-    if (await Admin.findOne()) return res.status(400).json({ success: false, message: 'Admin already exists' });
-
-    const hashedPassword = await bcrypt.hash(req.body.password, 10);
-    await new Admin({ email: req.body.email, password: hashedPassword }).save();
-    res.json({ success: true });
+    const users = await User.find({}, { password: 0, cartData: 0, __v: 0 }).lean();
+    res.json({
+      status: 'success',
+      data: {
+        users: users.map(user => ({
+          _id: user._id,
+          name: user.name,
+          email: user.email,
+          roles: user.roles || ['user'],
+          isActive: user.isActive !== false,
+          createdAt: user.date
+        }))
+      }
+    });
   } catch (err) {
-    console.error('Admin registration error:', err);
-    res.status(500).json({ success: false, message: 'Failed to register admin' });
+    res.status(500).json({ status: 'error', message: 'Failed to fetch users' });
   }
 });
 
-// === ADMIN LOGIN ===
-app.post('/admin/login', async (req, res) => {
+// === USER ROLE UPDATE ===
+app.put('/admin/users/:id/roles', authenticateAdmin, async (req, res) => {
   try {
-    const admin = await Admin.findOne({ email: req.body.email });
-    if (!admin) return res.status(400).json({ success: false, message: 'Invalid credentials' });
+    const { roles } = req.body;
+    if (!Array.isArray(roles)) return res.status(400).json({ success: false, message: 'Roles must be an array' });
 
-    const validPass = await bcrypt.compare(req.body.password, admin.password);
-    if (!validPass) return res.status(400).json({ success: false, message: 'Invalid credentials' });
+    const user = await User.findByIdAndUpdate(
+      req.params.id,
+      { roles },
+      { new: true, select: '-password -cartData' }
+    );
 
-    const token = jwt.sign({ admin: { id: admin._id } }, 'secret_dressmart');
-    res.json({ success: true, token });
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    res.json({ success: true, user });
   } catch (err) {
-    console.error('Admin login error:', err);
-    res.status(500).json({ success: false, message: 'Failed to login' });
+    res.status(500).json({ success: false, message: 'Failed to update user roles' });
   }
 });
 
-// === ORDER MODEL ===
+// === TOGGLE USER STATUS ===
+app.put('/admin/users/:id/status', authenticateAdmin, async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    user.isActive = !user.isActive;
+    await user.save();
+
+    res.json({
+      success: true,
+      user: {
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        roles: user.roles,
+        isActive: user.isActive,
+        date: user.date
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to toggle user status' });
+  }
+});
+
+
+
+
+
+// === ENHANCED ORDER MODEL ===
 const orderSchema = new mongoose.Schema({
-  user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  user: { 
+    type: mongoose.Schema.Types.ObjectId, 
+    ref: 'User', 
+    required: true 
+  },
   items: [
     {
-      productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
-      quantity: Number,
-    },
+      productId: { type: Number, required: true },
+      name: { type: String, required: true },
+      image: { type: String, required: true },
+      price: { type: Number, required: true },
+      quantity: { type: Number, required: true, min: 1 }
+    }
   ],
-  totalAmount: Number,
-  orderDate: { type: Date, default: Date.now },
-  status: { type: String, default: 'Pending' },
-});
+  shippingInfo: {
+    firstName: { type: String, required: true },
+    lastName: { type: String, required: true },
+    email: { type: String, required: true },
+    address: { type: String, required: true },
+    city: { type: String, required: true },
+    state: { type: String, required: true },
+    zipCode: { type: String, required: true },
+    country: { type: String, required: true },
+    phone: { type: String, required: true }
+  },
+  paymentInfo: {
+    method: { type: String, required: true, enum: ['creditCard', 'cash'] },
+    status: { type: String, default: 'Pending' },
+    cardLast4: { type: String },
+    cardExpiry: { type: String }
+  },
+  totalAmount: { type: Number, required: true },
+  shippingFee: { type: Number, default: 100.00 },
+  status: { 
+    type: String, 
+    default: 'Processing',
+    enum: ['Processing', 'Shipped', 'Delivered', 'Cancelled']
+  },
+  orderDate: { type: Date, default: Date.now }
+}, { timestamps: true });
 
 const Order = mongoose.model('Order', orderSchema);
 
-// === PLACE ORDER ===
-app.post('/order', fetchUser, async (req, res) => {
+// === ENHANCED PLACE ORDER ENDPOINT ===
+app.post('/placeorder', fetchUser, async (req, res) => {
   try {
-    const { items, totalAmount } = req.body;
-    if (!items || totalAmount <= 0) return res.status(400).json({ success: false, message: 'Invalid order data' });
+    const { items, shippingInfo, paymentInfo, totalAmount } = req.body;
+    
+    // Validate required fields
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Order must contain at least one item' 
+      });
+    }
 
-    const order = new Order({ user: req.user.id, items, totalAmount });
+    if (!shippingInfo || !paymentInfo || totalAmount === undefined) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Missing required fields' 
+      });
+    }
+
+    // Validate shipping info
+    const requiredShippingFields = ['firstName', 'lastName', 'email', 'address', 'city', 'state', 'zipCode', 'country', 'phone'];
+    for (const field of requiredShippingFields) {
+      if (!shippingInfo[field]) {
+        return res.status(400).json({ 
+          success: false, 
+          message: `Missing shipping field: ${field}` 
+        });
+      }
+    }
+
+    // Validate payment info
+    if (!['creditCard', 'cash'].includes(paymentInfo.method)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid payment method' 
+      });
+    }
+
+    if (paymentInfo.method === 'creditCard' && !paymentInfo.cardLast4) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Card information required for credit card payment' 
+      });
+    }
+
+    // Create order
+    const order = new Order({
+      user: req.user.id,
+      items: items.map(item => ({
+        productId: item.productId,
+        name: item.name,
+        image: item.image,
+        price: item.price,
+        quantity: item.quantity
+      })),
+      shippingInfo: {
+        firstName: shippingInfo.firstName,
+        lastName: shippingInfo.lastName,
+        email: shippingInfo.email,
+        address: shippingInfo.address,
+        city: shippingInfo.city,
+        state: shippingInfo.state,
+        zipCode: shippingInfo.zipCode,
+        country: shippingInfo.country,
+        phone: shippingInfo.phone
+      },
+      paymentInfo: {
+        method: paymentInfo.method,
+        status: 'Pending',
+        ...(paymentInfo.method === 'creditCard' && {
+          cardLast4: paymentInfo.cardLast4,
+          cardExpiry: paymentInfo.cardExpiry
+        })
+      },
+      totalAmount: parseFloat(totalAmount),
+      shippingFee: 100.00 // Fixed shipping fee as in frontend
+    });
+
     await order.save();
 
-    res.json({ success: true, orderId: order._id });
+    // Clear user's cart
+    await User.updateOne(
+      { _id: req.user.id },
+      { $set: { cartData: {} } }
+    );
+
+    res.status(201).json({ 
+      success: true, 
+      orderId: order._id,
+      message: 'Order placed successfully'
+    });
+
   } catch (err) {
     console.error('Place order error:', err);
-    res.status(500).json({ success: false, message: 'Failed to place order' });
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to place order',
+      error: err.message
+    });
   }
 });
 
-// === GET USER ORDERS ===
-app.get('/myorders', fetchUser, async (req, res) => {
+// === GET ORDER DETAILS ===
+app.get('/orders/:orderId', fetchUser, async (req, res) => {
   try {
-    const orders = await Order.find({ user: req.user.id }).populate('items.productId', 'name image');
-    res.json({ success: true, orders });
+    const order = await Order.findOne({
+      _id: req.params.orderId,
+      user: req.user.id
+    }).lean();
+
+    if (!order) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Order not found' 
+      });
+    }
+
+    // Convert MongoDB ObjectId to string and format dates
+    const formattedOrder = {
+      ...order,
+      _id: order._id.toString(),
+      orderDate: new Date(order.orderDate).toISOString(),
+      createdAt: new Date(order.createdAt).toISOString(),
+      updatedAt: new Date(order.updatedAt).toISOString(),
+      // Ensure items have proper IDs
+      items: order.items.map(item => ({
+        ...item,
+        _id: item._id ? item._id.toString() : undefined
+      }))
+    };
+
+    res.json({ 
+      success: true, 
+      order: formattedOrder 
+    });
+
   } catch (err) {
-    console.error('Get orders error:', err);
-    res.status(500).json({ success: false, message: 'Failed to fetch orders' });
+    console.error('Get order error:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch order',
+      error: err.message 
+    });
   }
 });
 
+
+
+
+// === ADMIN ORDER ROUTES ===
+
+// Get all orders (Admin only)
+app.get('/admin/orders', authenticateAdmin, async (req, res) => {
+  try {
+    const orders = await Order.find()
+      .sort({ createdAt: -1 })
+      .populate('user', 'name email');
+
+    res.json({ 
+      success: true, 
+      orders: orders.map(order => ({
+        ...order._doc,
+        user: order.user ? {
+          _id: order.user._id,
+          name: order.user.name,
+          email: order.user.email
+        } : null
+      }))
+    });
+  } catch (err) {
+    console.error('Admin get orders error:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch orders',
+      error: err.message 
+    });
+  }
+});
+
+// Update order status (Admin only)
+app.put('/admin/orders/:id/status', authenticateAdmin, async (req, res) => {
+  try {
+    const { status } = req.body;
+    const validStatuses = ['Processing', 'Shipped', 'Delivered', 'Cancelled'];
+
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid status value' 
+      });
+    }
+
+    const order = await Order.findByIdAndUpdate(
+      req.params.id,
+      { status },
+      { new: true }
+    ).populate('user', 'name email');
+
+    if (!order) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Order not found' 
+      });
+    }
+
+    res.json({ 
+      success: true, 
+      order: {
+        ...order._doc,
+        user: order.user ? {
+          _id: order.user._id,
+          name: order.user.name,
+          email: order.user.email
+        } : null
+      }
+    });
+  } catch (err) {
+    console.error('Admin update order status error:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to update order status',
+      error: err.message 
+    });
+  }
+});
+const authenticateUser = async (req, res, next) => {
+  const token = req.header('Authorization')?.replace('Bearer ', '');
+  
+  if (!token) {
+    return res.status(401).json({ 
+      success: false, 
+      message: 'Authorization token required' 
+    });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await User.findById(decoded.user?.id);
+    
+    if (!user) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'User not found' 
+      });
+    }
+
+    req.user = user;
+    next();
+  } catch (err) {
+    console.error('Authentication error:', err);
+    res.status(401).json({ 
+      success: false, 
+      message: 'Invalid or expired token' 
+    });
+  }
+};
+
+// 7. Add Token Verification Endpoint
+app.get('/verify-token', authenticateUser, (req, res) => {
+  res.json({
+    success: true,
+    user: {
+      id: req.user._id,
+      email: req.user.email,
+      roles: req.user.roles
+    }
+  });
+});
 // === UPLOAD ROUTE ===
 app.post('/upload', (req, res) => {
   if (!req.files || !req.files.product) {
