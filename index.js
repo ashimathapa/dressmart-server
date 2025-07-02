@@ -16,6 +16,7 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(fileUpload());
+const JWT_SECRET = process.env.JWT_SECRET;
 
 // MongoDB connection
 mongoose.connect('mongodb://localhost:27017/dressmart', {
@@ -266,7 +267,7 @@ app.post('/signup', async (req, res) => {
     const user = new User({ ...req.body, password: hashedPassword, cartData: cart });
     await user.save();
 
-    const token = jwt.sign({ user: { id: user._id } }, 'secret_dressmart');
+    const token = jwt.sign({ user: { id: user._id } }, JWT_SECRET);
     res.json({ success: true, token });
   } catch (err) {
     console.error('Signup error:', err);
@@ -274,63 +275,128 @@ app.post('/signup', async (req, res) => {
   }
 });
 
+// app.post('/login', async (req, res) => {
+//   try {
+//     const user = await User.findOne({ email: req.body.email });
+//     if (!user) return res.json({ success: false, message: 'Invalid credentials' });
+
+//     const validPass = await bcrypt.compare(req.body.password, user.password);
+//     if (!validPass) return res.json({ success: false, message: 'Invalid credentials' });
+
+//     const token = jwt.sign({ user: { id: user._id } }, JWT_SECRET);
+//     res.json({ success: true, token });
+//   } catch (err) {
+//     res.status(500).json({ success: false, message: 'Login failed' });
+//   }
+// });
+
+
+// app.post('/register-admin', async (req, res) => {
+//   try {
+//     const { email, password } = req.body;
+    
+//     // Check if admin already exists
+//     const existingAdmin = await User.findOne({ email, roles: 'admin' });
+//     if (existingAdmin) {
+//       return res.status(400).json({ 
+//         success: false, 
+//         message: 'Admin already exists' 
+//       });
+//     }
+
+//     const hashedPassword = await bcrypt.hash(password, 10);
+//     const admin = new User({ 
+//       email, 
+//       password: hashedPassword,
+//       roles: ['admin']
+//     });
+
+//     await admin.save();
+
+//     res.json({ 
+//       success: true,
+//       message: 'Admin registered successfully'
+//     });
+//   } catch (err) {
+//     console.error('Admin registration error:', err);
+//     res.status(500).json({ 
+//       success: false, 
+//       message: 'Failed to register admin',
+//       error: err.message 
+//     });
+//   }
+// });
+
+// // 3. Improved Admin Login
+// app.post('/admin/login', async (req, res) => {
+//   try {
+//     const { email, password } = req.body;
+
+//     if (!email || !password) {
+//       return res.status(400).json({ 
+//         success: false, 
+//         message: 'Email and password are required' 
+//       });
+//     }
+
+//     // Find user with admin role
+//     const admin = await User.findOne({ 
+//       email,
+//       roles: { $in: ['admin'] } 
+//     });
+
+//     if (!admin) {
+//       return res.status(401).json({ 
+//         success: false, 
+//         message: 'Admin account not found' 
+//       });
+//     }
+
+//     const validPass = await bcrypt.compare(password, admin.password);
+//     if (!validPass) {
+//       return res.status(401).json({ 
+//         success: false, 
+//         message: 'Invalid credentials' 
+//       });
+//     }
+
+//     const token = jwt.sign(
+//       { 
+//         user: { 
+//           id: admin._id,
+//           roles: admin.roles,
+//           isAdmin: true 
+//         } 
+//       }, 
+//       JWT_SECRET,
+//       { expiresIn: '8h' }
+//     );
+
+//     res.json({ 
+//       success: true, 
+//       token,
+//       user: {
+//         id: admin._id,
+//         email: admin.email,
+//         roles: admin.roles
+//       }
+//     });
+//   } catch (err) {
+//     console.error('Admin login error:', err);
+//     res.status(500).json({ 
+//       success: false, 
+//       message: 'Login failed',
+//       error: err.message 
+//     });
+//   }
+// });
+
+
 app.post('/login', async (req, res) => {
   try {
-    const user = await User.findOne({ email: req.body.email });
-    if (!user) return res.json({ success: false, message: 'Invalid credentials' });
-
-    const validPass = await bcrypt.compare(req.body.password, user.password);
-    if (!validPass) return res.json({ success: false, message: 'Invalid credentials' });
-
-    const token = jwt.sign({ user: { id: user._id } }, 'secret_dressmart');
-    res.json({ success: true, token });
-  } catch (err) {
-    res.status(500).json({ success: false, message: 'Login failed' });
-  }
-});
-
-
-app.post('/register-admin', async (req, res) => {
-  try {
-    const { email, password } = req.body;
-    
-    // Check if admin already exists
-    const existingAdmin = await User.findOne({ email, roles: 'admin' });
-    if (existingAdmin) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Admin already exists' 
-      });
-    }
-
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const admin = new User({ 
-      email, 
-      password: hashedPassword,
-      roles: ['admin']
-    });
-
-    await admin.save();
-
-    res.json({ 
-      success: true,
-      message: 'Admin registered successfully'
-    });
-  } catch (err) {
-    console.error('Admin registration error:', err);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Failed to register admin',
-      error: err.message 
-    });
-  }
-});
-
-// 3. Improved Admin Login
-app.post('/admin/login', async (req, res) => {
-  try {
     const { email, password } = req.body;
 
+    // Input validation
     if (!email || !password) {
       return res.status(400).json({ 
         success: false, 
@@ -338,20 +404,17 @@ app.post('/admin/login', async (req, res) => {
       });
     }
 
-    // Find user with admin role
-    const admin = await User.findOne({ 
-      email,
-      roles: { $in: ['admin'] } 
-    });
-
-    if (!admin) {
+    // Find user by email
+    const user = await User.findOne({ email });
+    if (!user) {
       return res.status(401).json({ 
         success: false, 
-        message: 'Admin account not found' 
+        message: 'Invalid credentials' 
       });
     }
 
-    const validPass = await bcrypt.compare(password, admin.password);
+    // Verify password
+    const validPass = await bcrypt.compare(password, user.password);
     if (!validPass) {
       return res.status(401).json({ 
         success: false, 
@@ -359,15 +422,15 @@ app.post('/admin/login', async (req, res) => {
       });
     }
 
+    // Create token with user roles
     const token = jwt.sign(
       { 
         user: { 
-          id: admin._id,
-          roles: admin.roles,
-          isAdmin: true 
+          id: user._id,
+          roles: user.roles
         } 
       }, 
-      'secret_dressmart',
+      JWT_SECRET,
       { expiresIn: '8h' }
     );
 
@@ -375,13 +438,13 @@ app.post('/admin/login', async (req, res) => {
       success: true, 
       token,
       user: {
-        id: admin._id,
-        email: admin.email,
-        roles: admin.roles
+        id: user._id,
+        email: user.email,
+        roles: user.roles
       }
     });
   } catch (err) {
-    console.error('Admin login error:', err);
+    console.error('Login error:', err);
     res.status(500).json({ 
       success: false, 
       message: 'Login failed',
@@ -389,15 +452,50 @@ app.post('/admin/login', async (req, res) => {
     });
   }
 });
+app.post('/register', async (req, res) => {
+  try {
+    const { email, password, isAdmin } = req.body;
+    
+    // Check if user already exists
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User already exists' 
+      });
+    }
 
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const roles = isAdmin ? ['admin'] : ['user'];
+    
+    const newUser = new User({ 
+      email, 
+      password: hashedPassword,
+      roles
+    });
 
+    await newUser.save();
+
+    res.json({ 
+      success: true,
+      message: 'User registered successfully'
+    });
+  } catch (err) {
+    console.error('Registration error:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to register user',
+      error: err.message 
+    });
+  }
+});
 
 // === AUTH MIDDLEWARE ===
 const fetchUser = (req, res, next) => {
   const token = req.header('auth-token');
   if (!token) return res.status(401).json({ error: 'Access denied. No token.' });
   try {
-    const data = jwt.verify(token, 'secret_dressmart');
+    const data = jwt.verify(token, JWT_SECRET);
     req.user = data.user;
     next();
   } catch {
@@ -405,116 +503,117 @@ const fetchUser = (req, res, next) => {
   }
 };
 
-app.post('/register-admin', async (req, res) => {
-  try {
-    const { email, password } = req.body;
+// app.post('/register-admin', async (req, res) => {
+//   try {
+//     const { email, password } = req.body;
     
-    // Check if admin already exists
-    const existingAdmin = await User.findOne({ email, roles: 'admin' });
-    if (existingAdmin) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Admin already exists' 
-      });
-    }
+//     // Check if admin already exists
+//     const existingAdmin = await User.findOne({ email, roles: 'admin' });
+//     if (existingAdmin) {
+//       return res.status(400).json({ 
+//         success: false, 
+//         message: 'Admin already exists' 
+//       });
+//     }
 
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const admin = new User({ 
-      email, 
-      password: hashedPassword,
-      roles: ['admin']
-    });
+//     const hashedPassword = await bcrypt.hash(password, 10);
+//     const admin = new User({ 
+//       email, 
+//       password: hashedPassword,
+//       roles: ['admin']
+//     });
 
-    await admin.save();
+//     await admin.save();
 
-    res.json({ 
-      success: true,
-      message: 'Admin registered successfully'
-    });
-  } catch (err) {
-    console.error('Admin registration error:', err);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Failed to register admin',
-      error: err.message 
-    });
-  }
-});
+//     res.json({ 
+//       success: true,
+//       message: 'Admin registered successfully'
+//     });
+//   } catch (err) {
+//     console.error('Admin registration error:', err);
+//     res.status(500).json({ 
+//       success: false, 
+//       message: 'Failed to register admin',
+//       error: err.message 
+//     });
+//   }
+// });
 
-// 3. Improved Admin Login
-app.post('/admin/login', async (req, res) => {
-  try {
-    const { email, password } = req.body;
+// // 3. Improved Admin Login
+// app.post('/admin/login', async (req, res) => {
+//   try {
+//     const { email, password } = req.body;
 
-    if (!email || !password) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Email and password are required' 
-      });
-    }
+//     if (!email || !password) {
+//       return res.status(400).json({ 
+//         success: false, 
+//         message: 'Email and password are required' 
+//       });
+//     }
 
-    // Find user with admin role
-    const admin = await User.findOne({ 
-      email,
-      roles: { $in: ['admin'] } 
-    });
+//     // Find user with admin role
+//     const admin = await User.findOne({ 
+//       email,
+//       roles: { $in: ['admin'] } 
+//     });
 
-    if (!admin) {
-      return res.status(401).json({ 
-        success: false, 
-        message: 'Admin account not found' 
-      });
-    }
+//     if (!admin) {
+//       return res.status(401).json({ 
+//         success: false, 
+//         message: 'Admin account not found' 
+//       });
+//     }
 
-    const validPass = await bcrypt.compare(password, admin.password);
-    if (!validPass) {
-      return res.status(401).json({ 
-        success: false, 
-        message: 'Invalid credentials' 
-      });
-    }
+//     const validPass = await bcrypt.compare(password, admin.password);
+//     if (!validPass) {
+//       return res.status(401).json({ 
+//         success: false, 
+//         message: 'Invalid credentials' 
+//       });
+//     }
 
-    const token = jwt.sign(
-      { 
-        user: { 
-          id: admin._id,
-          roles: admin.roles,
-          isAdmin: true 
-        } 
-      }, 
-      'secret_dressmart',
-      { expiresIn: '8h' }
-    );
+//     const token = jwt.sign(
+//       { 
+//         user: { 
+//           id: admin._id,
+//           roles: admin.roles,
+//           isAdmin: true 
+//         } 
+//       }, 
+//       JWT_SECRET,
+//       { expiresIn: '8h' }
+//     );
 
-    res.json({ 
-      success: true, 
-      token,
-      user: {
-        id: admin._id,
-        email: admin.email,
-        roles: admin.roles
-      }
-    });
-  } catch (err) {
-    console.error('Admin login error:', err);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Login failed',
-      error: err.message 
-    });
-  }
-});
+//     res.json({ 
+//       success: true, 
+//       token,
+//       user: {
+//         id: admin._id,
+//         email: admin.email,
+//         roles: admin.roles
+//       }
+//     });
+//   } catch (err) {
+//     console.error('Admin login error:', err);
+//     res.status(500).json({ 
+//       success: false, 
+//       message: 'Login failed',
+//       error: err.message 
+//     });
+//   }
+// });
 
 // 5. Admin-specific Middleware
-const requireAdmin = (req, res, next) => {
-  if (!req.user.roles.includes('admin')) {
-    return res.status(403).json({ 
-      success: false, 
-      message: 'Admin access required' 
-    });
-  }
-  next();
-};
+// const requireAdmin = (req, res, next) => {
+//   if (!req.user.roles.includes('admin')) {
+//     return res.status(403).json({ 
+//       success: false, 
+//       message: 'Admin access required' 
+//     });
+//   }
+//   next();
+// };
+
 
 // === AUTH MIDDLEWARE ===
 const authenticateAdmin = async (req, res, next) => {
@@ -525,7 +624,7 @@ const authenticateAdmin = async (req, res, next) => {
   }
 
   try {
-    const decoded = jwt.verify(token, 'secret_dressmart');
+    const decoded = jwt.verify(token, JWT_SECRET);
 
     const user = await User.findById(decoded.user.id);
     if (!user) {
@@ -994,7 +1093,7 @@ const authenticateUser = async (req, res, next) => {
   }
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, JWT_SECRET); // Using the same secret as elsewhere
     const user = await User.findById(decoded.user?.id);
     
     if (!user) {
@@ -1016,15 +1115,16 @@ const authenticateUser = async (req, res, next) => {
 };
 
 // 7. Add Token Verification Endpoint
-app.get('/verify-token', authenticateUser, (req, res) => {
-  res.json({
-    success: true,
-    user: {
-      id: req.user._id,
-      email: req.user.email,
-      roles: req.user.roles
-    }
-  });
+app.get('/verify-token', (req, res) => {
+  const token = req.header('auth-token');
+  if (!token) return res.status(401).json({ error: 'Access denied' });
+
+  try {
+    const verified = jwt.verify(token, JWT_SECRET);
+    res.json({ user: verified.user });
+  } catch (err) {
+    res.status(401).json({ error: 'Invalid token' });
+  }
 });
 // === UPLOAD ROUTE ===
 app.post('/upload', (req, res) => {
